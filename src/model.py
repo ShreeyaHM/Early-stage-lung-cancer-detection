@@ -32,29 +32,31 @@ class GenomicAttention(nn.Module):
 
 class GenomicLSTMClassifier(nn.Module):
     """
-    CNN-Bidirectional LSTM Deep Learning Model for Binary Genomic Signal Classification.
+    Enhanced CNN-Bidirectional LSTM Deep Learning Model for Binary Genomic Signal Classification.
     
     Pipeline:
-      (EIIP, Hilbert Envelope, Inst Freq, Local FFT Energy)
-      -> 1D Convolutional Motif Detector (kernel_size=5, filters=48)
-      -> LayerNorm & ReLU
-      -> 2-Layer Bidirectional LSTM (hidden_size=64, bidirectional=128)
-      -> Genomic Attention Pooling
+      (EIIP, Hilbert Envelope, Inst Freq)
+      -> In-model Channel Normalization
+      -> Multi-scale 1D Convolutional Motif Detector (kernels 3, 5, 7, 11)
+      -> MaxPool1d (2x temporal reduction & local invariance)
+      -> 2-Layer Bidirectional LSTM (hidden_size=128, bidirectional=256)
+      -> Dual Pooling: Genomic Self-Attention Pooling + Max Pooling + Macro Signal Skip
+      -> LayerNorm & GELU Dense Classification Head
       -> Binary Classification Head (Normal -ve vs Cancer Positive +ve)
     """
     def __init__(self, input_dim: int = 3, hidden_dim: int = 128, num_layers: int = 2, dropout: float = 0.20):
         super(GenomicLSTMClassifier, self).__init__()
         
-        # 1D Convolutional filter detects local nucleotide motifs and mutation disruption
-        self.conv = nn.Sequential(
-            nn.Conv1d(in_channels=input_dim, out_channels=64, kernel_size=5, padding=2),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
+        # Multi-scale 1D Convolutional filters for triplet codons (3), mutations (5, 7), and domains (11)
+        self.conv3 = nn.Conv1d(in_channels=input_dim, out_channels=32, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv1d(in_channels=input_dim, out_channels=32, kernel_size=5, padding=2)
+        self.conv7 = nn.Conv1d(in_channels=input_dim, out_channels=32, kernel_size=7, padding=3)
+        self.conv11 = nn.Conv1d(in_channels=input_dim, out_channels=32, kernel_size=11, padding=5)
+        self.norm_conv = nn.GroupNorm(num_groups=8, num_channels=128)
+        self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
         
         self.lstm = nn.LSTM(
-            input_size=64,
+            input_size=128,
             hidden_size=hidden_dim,
             num_layers=num_layers,
             batch_first=True,
@@ -62,19 +64,26 @@ class GenomicLSTMClassifier(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0
         )
         
-        lstm_out_dim = hidden_dim * 2 # bidirectional
+        lstm_out_dim = hidden_dim * 2 # bidirectional = 256
         self.attention = GenomicAttention(lstm_out_dim)
         
-        # Dense feature aggregator
+        # Combined feature size: Attention pooled (256) + Max pooled (256) + Macro Stats (12) = 524
+        combined_dim = lstm_out_dim * 2 + (input_dim * 4)
+        
+        # Dense feature aggregator with LayerNorm for stable train/eval consistency
         self.fc = nn.Sequential(
-            nn.Linear(lstm_out_dim, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(dropout)
+            nn.Linear(combined_dim, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(dropout / 2)
         )
         
         # Binary Classification Head: 0 = Normal (-ve), 1 = Cancer Positive (+ve)
-        self.classifier = nn.Linear(128, 2)
+        self.classifier = nn.Linear(64, 2)
         
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -84,24 +93,44 @@ class GenomicLSTMClassifier(nn.Module):
             logits: (batch_size, 2)
             attn_weights: (batch_size, seq_len)
         """
-        # Transpose to (batch_size, input_dim, seq_len) for Conv1d
-        x_trans = x.transpose(1, 2)
-        conv_out = self.conv(x_trans)
+        # In-model sequence-wise channel normalization (zero-mean, unit-variance)
+        seq_mean = x.mean(dim=1, keepdim=True)
+        seq_std = x.std(dim=1, keepdim=True) + 1e-6
+        x_norm = (x - seq_mean) / seq_std
         
-        # Transpose back to (batch_size, seq_len, 48) for LSTM
-        lstm_in = conv_out.transpose(1, 2)
+        # Extract macro sequence statistics
+        mean_stat = torch.mean(x_norm, dim=1)
+        std_stat = torch.std(x_norm, dim=1)
+        max_stat, _ = torch.max(x_norm, dim=1)
+        min_stat, _ = torch.min(x_norm, dim=1)
+        stats = torch.cat([mean_stat, std_stat, max_stat, min_stat], dim=-1) # (batch, 12)
+        
+        # Multi-scale Convolutions
+        xt = x_norm.transpose(1, 2)
+        c3 = F.gelu(self.conv3(xt))
+        c5 = F.gelu(self.conv5(xt))
+        c7 = F.gelu(self.conv7(xt))
+        c11 = F.gelu(self.conv11(xt))
+        c = torch.cat([c3, c5, c7, c11], dim=1)
+        c = self.norm_conv(c)
+        c = self.pool(c) # (batch, 128, seq_len // 2)
         
         # BiLSTM
+        lstm_in = c.transpose(1, 2)
         lstm_out, _ = self.lstm(lstm_in)
         
-        # Attention pooling
-        pooled, attn_weights = self.attention(lstm_out)
+        # Dual Pooling
+        attn_pooled, attn_weights = self.attention(lstm_out)
+        max_pooled, _ = torch.max(lstm_out, dim=1)
         
-        # Classification
-        feat = self.fc(pooled)
+        # Feature fusion and classification
+        fused = torch.cat([attn_pooled, max_pooled, stats], dim=-1)
+        feat = self.fc(fused)
         logits = self.classifier(feat)
         
-        return logits, attn_weights
+        # Rescale attention weights back to original sequence length for nucleotide hotspot visualization
+        full_attn = F.interpolate(attn_weights.unsqueeze(1), size=x.size(1), mode='linear', align_corners=False).squeeze(1)
+        return logits, full_attn
 
 def predict_single_sequence(
     model: GenomicLSTMClassifier,

@@ -104,12 +104,12 @@ def train():
     
     model = GenomicLSTMClassifier(input_dim=3, hidden_dim=128, num_layers=2, dropout=0.20).to(device)
     print("MODEL INITIALIZED", flush=True)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=4)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.03)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-3)
+    num_epochs = 20
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-5)
     
     # 4. Training Loop
-    num_epochs = 20
     print(f"\n[Step 3/5] Commencing binary model training for {num_epochs} epochs...", flush=True)
     print("STARTING EPOCH LOOP", flush=True)
     history = {'train_loss': [], 'val_loss': [], 'val_acc': []}
@@ -136,6 +136,7 @@ def train():
             
             running_loss += loss.item() * inputs.size(0)
             
+        scheduler.step()
         epoch_train_loss = running_loss / len(train_idx)
         
         # Validation
@@ -156,7 +157,6 @@ def train():
                 
         epoch_val_loss = val_loss / len(val_idx)
         epoch_val_acc = val_correct / len(val_idx)
-        scheduler.step(epoch_val_acc)
         
         history['train_loss'].append(round(epoch_train_loss, 4))
         history['val_loss'].append(round(epoch_val_loss, 4))
@@ -178,10 +178,10 @@ def train():
         print(f"Epoch [{epoch+1:02d}/{num_epochs:02d}] - Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f} | Val Acc: {epoch_val_acc*100:.1f}%{saved_msg}", flush=True)
         
         # Early stopping if target accuracy reached or plateaued
-        if epoch_val_acc >= 0.92 and (epoch + 1) >= 8:
-            print(f"Target accuracy reached (Val Acc: {epoch_val_acc*100:.1f}% >= 92%). Early stopping triggered!", flush=True)
+        if epoch_val_acc >= 0.94 and (epoch + 1) >= 12:
+            print(f"Target accuracy reached (Val Acc: {epoch_val_acc*100:.1f}% >= 94%). Early stopping triggered!", flush=True)
             break
-        if patience_counter >= 5 and (epoch + 1) >= 10:
+        if patience_counter >= 8 and (epoch + 1) >= 14:
             print("Early stopping triggered due to validation plateau.", flush=True)
             break
             
@@ -193,9 +193,28 @@ def train():
     torch.save(best_model_weights, "models/genomic_lstm.pth")
     print("Saved best model weights to: models/genomic_lstm.pth")
     
-    # 5. Evaluation on Unseen Test Set
-    print("\n[Step 4/5] Evaluating on unseen test set...")
+    # 5. Threshold Calibration on Validation Set
+    print("\n[Step 4/5] Calibrating optimal decision threshold on validation set...")
     model.eval()
+    val_probs = []
+    val_targets = []
+    with torch.no_grad():
+        for inputs, batch_labels, _ in val_loader:
+            inputs = inputs.to(device)
+            logits, _ = model(inputs)
+            probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+            val_probs.extend(probs.tolist())
+            val_targets.extend(batch_labels.numpy().tolist())
+            
+    fpr_val, tpr_val, thresh_val = roc_curve(val_targets, val_probs)
+    j_scores = tpr_val - fpr_val
+    best_idx = int(np.argmax(j_scores))
+    optimal_thresh = float(thresh_val[best_idx]) if len(thresh_val) > best_idx else 0.50
+    optimal_thresh = float(np.clip(optimal_thresh, 0.40, 0.65))
+    print(f"Calibrated Optimal Decision Threshold: {optimal_thresh:.4f}")
+    
+    # 6. Evaluation on Unseen Test Set
+    print("\n[Step 5/5] Evaluating on unseen test set using calibrated threshold...")
     all_preds = []
     all_targets = []
     all_probs = []
@@ -205,7 +224,7 @@ def train():
             inputs = inputs.to(device)
             logits, _ = model(inputs)
             probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
+            preds = (probs >= optimal_thresh).astype(int)
             
             all_probs.extend(probs.tolist())
             all_preds.extend(preds.tolist())
@@ -216,12 +235,6 @@ def train():
     fpr, tpr, thresholds = roc_curve(all_targets, all_probs)
     roc_auc = auc(fpr, tpr)
     cm = confusion_matrix(all_targets, all_preds).tolist()
-    
-    # Optimal Youden's J statistic threshold
-    j_scores = tpr - fpr
-    best_idx = int(np.argmax(j_scores))
-    optimal_thresh = float(thresholds[best_idx]) if len(thresholds) > best_idx else 0.50
-    optimal_thresh = float(np.clip(optimal_thresh, 0.40, 0.85))
     
     print(f"Test Accuracy:       {test_acc * 100:.2f}%")
     print(f"Test Precision:      {precision * 100:.2f}%")
