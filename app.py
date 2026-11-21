@@ -26,7 +26,7 @@ from src.dataset import REFERENCE_SEQUENCES, inject_somatic_mutation
 
 # Page Configuration
 st.set_page_config(
-    page_title="AI Lung Cancer Genomic Detection",
+    page_title="AI Lung Cancer Detection Using Genomic Signals",
     page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"

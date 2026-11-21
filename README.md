@@ -22,7 +22,7 @@ This project investigates the utilization of **1D genomic signals extracted from
 
 ## 🔬 End-to-End Diagnostic Pipeline
 
-$$\text{Input DNA Sequence} \xrightarrow{\text{EIIP}} \text{1D Physical Signal} \xrightarrow{\text{FFT + Hilbert}} \text{Spectral \& Envelope Features} \xrightarrow{\text{K-mer Graph}} \text{BiLSTM + Attention} \xrightarrow{} \text{Prediction (+ve / -ve)}$$
+$$\text{Input DNA Sequence} \xrightarrow{\text{EIIP}} \text{1D Physical Signal} \xrightarrow{\text{FFT + Hilbert}} \text{Spectral and Envelope Features} \xrightarrow{\text{K-mer Graph}} \text{BiLSTM + Attention} \xrightarrow{} \text{Prediction (+ve / -ve)}$$
 
 ### 1. Numerical Encoding: EIIP
 Converts nucleotide bases into physical-chemical valence electron energy potentials (in Rydberg units):
@@ -82,7 +82,6 @@ lungcancer_dl/
 ├── train.py                    # Model training & validation pipeline script
 ├── requirements.txt            # Dependencies
 ├── README.md                   # Project documentation
-├── COLAB_TRAINING.md           # Google Colab GPU training instructions & code
 ├── src/
 │   ├── encoding.py             # EIIP numerical mapping & validation
 │   ├── signal_features.py      # FFT spectral & Hilbert analytic signal processing
@@ -111,12 +110,9 @@ pip install -r requirements.txt
 ```
 
 ### 2. Train the Genomic Model (Optional - Pre-trained weights provided)
-- **Local Training (CPU)**:
-  ```bash
-  python train.py
-  ```
-- **Google Colab (GPU Acceleration)**:
-  Follow the step-by-step guide in [COLAB_TRAINING.md](file:///e:/lungcancer_dl/COLAB_TRAINING.md) to train with GPU acceleration, full 1,000 bp sequence coverage, and higher model capacity.
+```bash
+python train.py
+```
 
 ### 3. Launch the Streamlit Web Application
 ```bash
