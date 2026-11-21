@@ -1107,7 +1107,7 @@ elif selected_page == "Team Details":
                 </div>
             </div>
             <hr style="border: 0; height: 1px; background: #E2E8F0; margin: 15px 0;">
-            <p style="color: #334155; font-size: 0.95rem;">📅 <b>Academic Session</b>: Major Project (Phase 3)</p>
+            <p style="color: #334155; font-size: 0.95rem;">📅 <b>Academic Session</b>: Major Project (Phase 4)</p>
             <p style="color: #334155; font-size: 0.95rem;">🚀 <b>Core Domain</b>: Computational Biology, Deep Learning & Medical Imaging</p>
             <p style="color: #334155; font-size: 0.95rem;">🔬 <b>Methodology</b>: EIIP Numerical Encoding, FFT Spectral Periodicity, Hilbert Transform, PyTorch BiLSTM Attention Network</p>
             <p style="color: #334155; font-size: 0.95rem;">💻 <b>Benchmarking</b>: PET/CT Foundation Model for Anatomical & Functional Imaging (FratMAE, arXiv:2503.02824)</p>
